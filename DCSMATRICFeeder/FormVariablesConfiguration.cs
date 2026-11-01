@@ -11,15 +11,9 @@ public partial class FormVariablesConfiguration : Form {
 
     public FormVariablesConfiguration() {
         InitializeComponent();
-        txtAvailableFilter.TextChanged += (_, _) => RefreshLists();
-        txtConfiguredFilter.TextChanged += (_, _) => RefreshLists();
-        var hint = new Label {
-            Text = "No saved selection: export all. Saving an empty selection: export none for that module.",
-            Dock = DockStyle.Bottom, Height = 24, AutoEllipsis = true
-        };
-        Controls.Add(hint);
-        ClientSize = new Size(ClientSize.Width, ClientSize.Height + 24);
     }
+
+    private void SearchFilters_TextChanged(object? sender, EventArgs e) => RefreshLists();
 
     public void LoadTempSettings() => _editor = new(Program.mwSettings.AircraftVariables);
 

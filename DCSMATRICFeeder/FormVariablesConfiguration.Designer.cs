@@ -43,6 +43,7 @@ namespace EXM.DBMM {
             btnClearAvailableFilter = new Button();
             btnClearConfiguredFilter = new Button();
             txtConfiguredFilter = new TextBox();
+            lblSelectionHint = new Label();
             SuspendLayout();
             // 
             // ddAircraft
@@ -200,6 +201,7 @@ namespace EXM.DBMM {
             txtAvailableFilter.Name = "txtAvailableFilter";
             txtAvailableFilter.Size = new Size(310, 27);
             txtAvailableFilter.TabIndex = 1;
+            txtAvailableFilter.TextChanged += SearchFilters_TextChanged;
             // 
             // btnClearAvailableFilter
             // 
@@ -230,12 +232,24 @@ namespace EXM.DBMM {
             txtConfiguredFilter.Name = "txtConfiguredFilter";
             txtConfiguredFilter.Size = new Size(310, 27);
             txtConfiguredFilter.TabIndex = 31;
+            txtConfiguredFilter.TextChanged += SearchFilters_TextChanged;
+            //
+            // lblSelectionHint
+            //
+            lblSelectionHint.AutoEllipsis = true;
+            lblSelectionHint.Dock = DockStyle.Bottom;
+            lblSelectionHint.Location = new Point(0, 600);
+            lblSelectionHint.Name = "lblSelectionHint";
+            lblSelectionHint.Size = new Size(804, 24);
+            lblSelectionHint.TabIndex = 33;
+            lblSelectionHint.Text = "No saved selection: export all. Saving an empty selection: export none for that module.";
             // 
             // FormVariablesConfiguration
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(804, 600);
+            ClientSize = new Size(804, 624);
+            Controls.Add(lblSelectionHint);
             Controls.Add(btnClearConfiguredFilter);
             Controls.Add(txtConfiguredFilter);
             Controls.Add(btnClearAvailableFilter);
@@ -288,5 +302,6 @@ namespace EXM.DBMM {
         private Button btnClearAvailableFilter;
         private Button btnClearConfiguredFilter;
         private TextBox txtConfiguredFilter;
+        private Label lblSelectionHint;
     }
 }

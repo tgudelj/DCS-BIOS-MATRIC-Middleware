@@ -23,6 +23,7 @@
         ///  the contents of this method with the code editor.
         /// </summary>
         private void InitializeComponent() {
+            components = new System.ComponentModel.Container();
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(FormMain));
             txtBIOSListenPort = new NumericUpDown();
             lblBiosListenIP = new Label();
@@ -52,8 +53,15 @@
             manualToolStripMenuItem = new ToolStripMenuItem();
             projectWebToolStripMenuItem = new ToolStripMenuItem();
             checkForUpdateToolStripMenuItem = new ToolStripMenuItem();
+            openLogsToolStripMenuItem = new ToolStripMenuItem();
+            healthPanel = new FlowLayoutPanel();
+            lblBiosHealth = new Label();
+            lblMatricHealth = new Label();
+            lblActiveAircraft = new Label();
+            healthTimer = new System.Windows.Forms.Timer(components);
             ((System.ComponentModel.ISupportInitialize)txtBIOSListenPort).BeginInit();
             groupBox1.SuspendLayout();
+            healthPanel.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)tbUpdateFrequency).BeginInit();
             ((System.ComponentModel.ISupportInitialize)txtDCSBIOSImportPort).BeginInit();
             menuStrip1.SuspendLayout();
@@ -64,6 +72,7 @@
             txtBIOSListenPort.Font = new Font("Segoe UI", 11F);
             txtBIOSListenPort.Location = new Point(436, 155);
             txtBIOSListenPort.Maximum = new decimal(new int[] { 65535, 0, 0, 0 });
+            txtBIOSListenPort.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
             txtBIOSListenPort.Name = "txtBIOSListenPort";
             txtBIOSListenPort.Size = new Size(227, 27);
             txtBIOSListenPort.TabIndex = 4;
@@ -145,7 +154,7 @@
             // 
             pbSentVars.BackColor = Color.FromArgb(66, 66, 66);
             pbSentVars.ForeColor = Color.FromArgb(244, 157, 15);
-            pbSentVars.Location = new Point(74, 441);
+            pbSentVars.Location = new Point(62, 64);
             pbSentVars.Maximum = 200;
             pbSentVars.Name = "pbSentVars";
             pbSentVars.Size = new Size(583, 26);
@@ -157,7 +166,7 @@
             // 
             pbBuffer.BackColor = Color.FromArgb(66, 66, 66);
             pbBuffer.ForeColor = Color.FromArgb(244, 157, 15);
-            pbBuffer.Location = new Point(74, 408);
+            pbBuffer.Location = new Point(62, 31);
             pbBuffer.Maximum = 200;
             pbBuffer.Name = "pbBuffer";
             pbBuffer.Size = new Size(583, 26);
@@ -191,13 +200,55 @@
             // 
             groupBox1.Controls.Add(label2);
             groupBox1.Controls.Add(label1);
+            groupBox1.Controls.Add(pbBuffer);
+            groupBox1.Controls.Add(pbSentVars);
+            groupBox1.Controls.Add(healthPanel);
             groupBox1.Font = new Font("Segoe UI", 10F);
             groupBox1.Location = new Point(12, 372);
             groupBox1.Name = "groupBox1";
-            groupBox1.Size = new Size(651, 108);
+            groupBox1.Size = new Size(651, 185);
             groupBox1.TabIndex = 18;
             groupBox1.TabStop = false;
             groupBox1.Text = "Status";
+            //
+            // healthPanel
+            //
+            healthPanel.Controls.Add(lblBiosHealth);
+            healthPanel.Controls.Add(lblMatricHealth);
+            healthPanel.Controls.Add(lblActiveAircraft);
+            healthPanel.FlowDirection = FlowDirection.TopDown;
+            healthPanel.Location = new Point(12, 100);
+            healthPanel.Name = "healthPanel";
+            healthPanel.Size = new Size(627, 80);
+            healthPanel.TabIndex = 19;
+            healthPanel.WrapContents = false;
+            //
+            // lblBiosHealth
+            //
+            lblBiosHealth.AutoSize = true;
+            lblBiosHealth.Location = new Point(3, 0);
+            lblBiosHealth.Name = "lblBiosHealth";
+            lblBiosHealth.Size = new Size(128, 19);
+            lblBiosHealth.TabIndex = 0;
+            lblBiosHealth.Text = "DCS-BIOS: stopped";
+            //
+            // lblMatricHealth
+            //
+            lblMatricHealth.AutoSize = true;
+            lblMatricHealth.Location = new Point(3, 19);
+            lblMatricHealth.Name = "lblMatricHealth";
+            lblMatricHealth.Size = new Size(119, 19);
+            lblMatricHealth.TabIndex = 1;
+            lblMatricHealth.Text = "MATRIC: stopped";
+            //
+            // lblActiveAircraft
+            //
+            lblActiveAircraft.AutoSize = true;
+            lblActiveAircraft.Location = new Point(3, 38);
+            lblActiveAircraft.Name = "lblActiveAircraft";
+            lblActiveAircraft.Size = new Size(78, 19);
+            lblActiveAircraft.TabIndex = 2;
+            lblActiveAircraft.Text = "Aircraft: —";
             // 
             // btnFilterDialog
             // 
@@ -258,6 +309,7 @@
             txtDCSBIOSImportPort.Font = new Font("Segoe UI", 11F);
             txtDCSBIOSImportPort.Location = new Point(436, 241);
             txtDCSBIOSImportPort.Maximum = new decimal(new int[] { 65535, 0, 0, 0 });
+            txtDCSBIOSImportPort.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
             txtDCSBIOSImportPort.Name = "txtDCSBIOSImportPort";
             txtDCSBIOSImportPort.Size = new Size(227, 27);
             txtDCSBIOSImportPort.TabIndex = 24;
@@ -295,7 +347,7 @@
             // 
             // helpToolStripMenuItem
             // 
-            helpToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { manualToolStripMenuItem, projectWebToolStripMenuItem, checkForUpdateToolStripMenuItem });
+            helpToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { manualToolStripMenuItem, projectWebToolStripMenuItem, checkForUpdateToolStripMenuItem, openLogsToolStripMenuItem });
             helpToolStripMenuItem.Name = "helpToolStripMenuItem";
             helpToolStripMenuItem.Size = new Size(47, 21);
             helpToolStripMenuItem.Text = "Help";
@@ -321,19 +373,29 @@
             checkForUpdateToolStripMenuItem.Text = "Latest release";
             checkForUpdateToolStripMenuItem.Click += checkForUpdateToolStripMenuItem_Click;
             // 
+            // openLogsToolStripMenuItem
+            //
+            openLogsToolStripMenuItem.Name = "openLogsToolStripMenuItem";
+            openLogsToolStripMenuItem.Size = new Size(180, 22);
+            openLogsToolStripMenuItem.Text = "Open logs folder";
+            openLogsToolStripMenuItem.Click += openLogsToolStripMenuItem_Click;
+            //
+            // healthTimer
+            //
+            healthTimer.Interval = 1000;
+            healthTimer.Tick += healthTimer_Tick;
+            //
             // FormMain
             // 
             AutoScaleDimensions = new SizeF(7F, 17F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(675, 484);
+            ClientSize = new Size(675, 580);
             Controls.Add(lblDCSBIOSImport);
             Controls.Add(txtDCSBIOSImportPort);
             Controls.Add(lblUpdateFrequency);
             Controls.Add(tbUpdateFrequency);
             Controls.Add(lblUpdatesLabel);
             Controls.Add(btnFilterDialog);
-            Controls.Add(pbBuffer);
-            Controls.Add(pbSentVars);
             Controls.Add(lblBiosInstance);
             Controls.Add(txtDCSBiosInstancePath);
             Controls.Add(btnBrowse);
@@ -351,9 +413,12 @@
             Name = "FormMain";
             Text = "DCS-BIOS MATRIC Middleware";
             Load += frmMain_Load;
+            FormClosing += OnFormClosing;
             ((System.ComponentModel.ISupportInitialize)txtBIOSListenPort).EndInit();
             groupBox1.ResumeLayout(false);
             groupBox1.PerformLayout();
+            healthPanel.ResumeLayout(false);
+            healthPanel.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)tbUpdateFrequency).EndInit();
             ((System.ComponentModel.ISupportInitialize)txtDCSBIOSImportPort).EndInit();
             menuStrip1.ResumeLayout(false);
@@ -392,5 +457,11 @@
         private ToolStripMenuItem manualToolStripMenuItem;
         private ToolStripMenuItem checkForUpdateToolStripMenuItem;
         private ToolStripMenuItem projectWebToolStripMenuItem;
+        private ToolStripMenuItem openLogsToolStripMenuItem;
+        private FlowLayoutPanel healthPanel;
+        private Label lblBiosHealth;
+        private Label lblMatricHealth;
+        private Label lblActiveAircraft;
+        private System.Windows.Forms.Timer healthTimer;
     }
 }

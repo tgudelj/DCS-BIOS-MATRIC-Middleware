@@ -13,35 +13,14 @@ public partial class FormMain : Form {
     private bool _allowClose;
     private string _operation = "";
     private Task _transitionTask = Task.CompletedTask;
-    private readonly Label _biosHealth = new() { AutoSize = true, Text = "DCS-BIOS: stopped" };
-    private readonly Label _matricHealth = new() { AutoSize = true, Text = "MATRIC: stopped" };
-    private readonly Label _aircraft = new() { AutoSize = true, Text = "Aircraft: —" };
-    private readonly System.Windows.Forms.Timer _healthTimer;
 
     public FormMain() {
         InitializeComponent();
-        txtBIOSListenPort.Minimum = 1;
-        txtDCSBIOSImportPort.Minimum = 1;
-        ClientSize = new Size(ClientSize.Width, 580);
-        groupBox1.Size = new Size(651, 185);
-        groupBox1.Controls.Add(pbBuffer);
-        groupBox1.Controls.Add(pbSentVars);
-        pbBuffer.Location = new Point(62, 31);
-        pbSentVars.Location = new Point(62, 64);
-        var health = new FlowLayoutPanel {
-            Location = new Point(12, 100), Size = new Size(627, 80), FlowDirection = FlowDirection.TopDown, WrapContents = false
-        };
-        health.Controls.AddRange(new Control[] { _biosHealth, _matricHealth, _aircraft });
-        groupBox1.Controls.Add(health);
-        var logs = new ToolStripMenuItem("Open logs folder");
-        logs.Click += (_, _) => OpenLogs();
-        helpToolStripMenuItem.DropDownItems.Add(logs);
-        components ??= new System.ComponentModel.Container();
-        _healthTimer = new System.Windows.Forms.Timer(components) { Interval = 1000 };
-        _healthTimer.Tick += (_, _) => RefreshHealth();
-        _healthTimer.Start();
-        FormClosing += OnFormClosing;
+        healthTimer.Start();
     }
+
+    private void healthTimer_Tick(object? sender, EventArgs e) => RefreshHealth();
+    private void openLogsToolStripMenuItem_Click(object? sender, EventArgs e) => OpenLogs();
 
     private void btnBrowse_Click(object sender, EventArgs e) {
         dlgFindDCS.InitialDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Saved Games");
@@ -187,20 +166,20 @@ public partial class FormMain : Form {
 
     private void RefreshHealth() {
         if (_session == null) {
-            _biosHealth.Text = _transitioning ? "DCS-BIOS: changing state…" : "DCS-BIOS: stopped";
-            _matricHealth.Text = "MATRIC: stopped";
-            _biosHealth.ForeColor = _matricHealth.ForeColor = SystemColors.ControlText;
-            _aircraft.Text = "Aircraft: —";
+            lblBiosHealth.Text = _transitioning ? "DCS-BIOS: changing state…" : "DCS-BIOS: stopped";
+            lblMatricHealth.Text = "MATRIC: stopped";
+            lblBiosHealth.ForeColor = lblMatricHealth.ForeColor = SystemColors.ControlText;
+            lblActiveAircraft.Text = "Aircraft: —";
             pbBuffer.Value = pbSentVars.Value = 0;
             return;
         }
         var listener = _session.Listener;
         var translator = _session.Translator;
-        _biosHealth.Text = "DCS-BIOS: " + (listener.LastError != null ? "error — stop and restart; see logs" : listener.IsReceiving ? "receiving" : "waiting for stream");
-        _biosHealth.ForeColor = listener.LastError != null ? Color.Firebrick : listener.IsReceiving ? Color.DarkGreen : Color.DarkGoldenrod;
-        _matricHealth.Text = "MATRIC: " + (translator.LastError != null ? "send error; see logs" : translator.IsMatricConnected ? "responding" : "waiting / not responding");
-        _matricHealth.ForeColor = translator.IsMatricConnected && translator.LastError == null ? Color.DarkGreen : Color.DarkGoldenrod;
-        _aircraft.Text = "Aircraft: " + (string.IsNullOrEmpty(listener.ActiveAircraft) ? "waiting for detection" : listener.ActiveAircraft);
+        lblBiosHealth.Text = "DCS-BIOS: " + (listener.LastError != null ? "error — stop and restart; see logs" : listener.IsReceiving ? "receiving" : "waiting for stream");
+        lblBiosHealth.ForeColor = listener.LastError != null ? Color.Firebrick : listener.IsReceiving ? Color.DarkGreen : Color.DarkGoldenrod;
+        lblMatricHealth.Text = "MATRIC: " + (translator.LastError != null ? "send error; see logs" : translator.IsMatricConnected ? "responding" : "waiting / not responding");
+        lblMatricHealth.ForeColor = translator.IsMatricConnected && translator.LastError == null ? Color.DarkGreen : Color.DarkGoldenrod;
+        lblActiveAircraft.Text = "Aircraft: " + (string.IsNullOrEmpty(listener.ActiveAircraft) ? "waiting for detection" : listener.ActiveAircraft);
         pbBuffer.Value = Math.Min(translator.PendingCount, pbBuffer.Maximum);
         pbSentVars.Value = Math.Min(translator.LastSentCount, pbSentVars.Maximum);
     }
