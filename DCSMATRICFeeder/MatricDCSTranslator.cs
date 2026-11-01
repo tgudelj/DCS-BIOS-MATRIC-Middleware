@@ -1,215 +1,199 @@
 ﻿using DcsBios.Communicator;
+using DcsBios.Communicator.Configuration;
 using Matric.Integration;
 using Microsoft.Extensions.Logging;
-using System.Collections.Generic;
-using System.Diagnostics;
+using System.Threading.Channels;
 
-namespace EXM.DBMM {
-    internal class MatricDCSTranslator : IBiosTranslator, IDisposable {
+namespace EXM.DBMM;
 
-        internal class TxRxNotificationEventArgs : EventArgs {
-            public TxRxNotificationEventArgs(int count) {
-                Count = count;
-            }
-            public int Count { get; set; }
+internal sealed class MatricDCSTranslator : IBiosTranslator, IAsyncDisposable {
+    internal const string InputCommand = "DCS_INPUT_COMMAND";
+    private readonly IMatricConnection _connection;
+    private readonly Func<string, CancellationToken, Task> _sendCommand;
+    private readonly ILogger _logger;
+    private readonly AircraftBiosConfiguration[] _configurations;
+    private readonly TimeProvider _clock;
+    private readonly object _gate = new();
+    private readonly Dictionary<string, object> _values = new();
+    private readonly Dictionary<string, ServerVariable> _pending = new();
+    private Dictionary<string, List<string>> _selections;
+    private HashSet<string>? _allowed;
+    private string _aircraft = "";
+    private int _frequency;
+    private int _lastSent;
+    private bool _wasConnected;
+    private long? _lastProbe;
+    private long _lastSnapshot;
+    private string? _lastError;
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Channel<string> _commands = Channel.CreateBounded<string>(256);
+    private Task? _worker;
+    private Task? _commandWorker;
+    private bool _disposed;
+
+    public bool IsMatricConnected => _connection.IsConnected;
+    public string? LastError => Volatile.Read(ref _lastError);
+    public int LastSentCount => Volatile.Read(ref _lastSent);
+    public int PendingCount { get { lock (_gate) return _pending.Count; } }
+    public int UpdateFrequency => Volatile.Read(ref _frequency);
+
+    internal MatricDCSTranslator(IMatricConnection connection, Func<string, CancellationToken, Task> sendCommand,
+        IEnumerable<AircraftBiosConfiguration> configurations, Dictionary<string, List<string>> selections,
+        int frequency, ILogger logger, TimeProvider? clock = null) {
+        _connection = connection;
+        _sendCommand = sendCommand;
+        _configurations = configurations.ToArray();
+        _selections = Copy(selections);
+        _logger = logger;
+        _clock = clock ?? TimeProvider.System;
+        _lastSnapshot = _clock.GetTimestamp();
+        SetUpdateFrequency(frequency);
+        _pending[InputCommand] = CommandVariable();
+        _connection.VariablesChanged += VariablesChanged;
+    }
+
+    private static Dictionary<string, List<string>> Copy(Dictionary<string, List<string>> selections) =>
+        selections.ToDictionary(p => p.Key, p => p.Value.Distinct(StringComparer.Ordinal).ToList());
+
+    public void Start() {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_worker != null) throw new InvalidOperationException("Translator already started.");
+        _worker = Task.Run(RunAsync);
+        _commandWorker = Task.Run(ProcessCommandsAsync);
+    }
+
+    public void SetUpdateFrequency(int frequency) {
+        if (frequency is < 1 or > 25) throw new ArgumentOutOfRangeException(nameof(frequency), "Updates must be between 1 and 25 per second.");
+        Volatile.Write(ref _frequency, frequency);
+    }
+
+    public void UpdateConfiguration(Dictionary<string, List<string>> selections) {
+        lock (_gate) {
+            _selections = Copy(selections);
+            RebuildFilter();
+            foreach (var key in _pending.Keys.Where(k => k != InputCommand).ToArray()) _pending.Remove(key);
+            QueueSnapshot();
         }
+    }
 
-        int MAX_VAR_LIST = 100;
-        const string COMMON_DATA = "CommonData";
-        const string METADATA_START = "MetadataStart";
-        const string METADATA_END = "MetadataEnd";
-        const string DCS_INPUT_COMMAND = "DCS_INPUT_COMMAND";
-        string _currentAircraftName = string.Empty;
-        List<string> _allowedVariables = new List<string>();
-        Matric.Integration.Matric matricComm;
-        Dictionary<string, object> _dcsValues;
-        Dictionary<string, ServerVariable> _changesBuffer;
-        System.Threading.Timer _timer;
-        BiosUdpClient _biosClient = null;
-        ILogger _logger;
-        private object locker = new object();
-        public MatricDCSTranslator(int matricIntegrationPort, BiosUdpClient biosClient, ILogger logger) {
-            _logger = logger;
-            _biosClient = biosClient;
-            _dcsValues = new Dictionary<string, object>();
-            _changesBuffer = new Dictionary<string, ServerVariable>();
-            _timer = new System.Threading.Timer(SendUpdates,
-                                                null,
-                                                100,
-                                                (int)Math.Round(1000d / Program.mwSettings.UpdateFrequency)
-                                                );            
-            matricComm = new Matric.Integration.Matric("DCS", null, matricIntegrationPort);
-            matricComm.OnVariablesChanged += MatricComm_OnVariablesChanged;
-            matricComm.OnControlInteraction += MatricComm_OnControlInteraction;
-            //create DCS_INPUT_COMMAND as user editable variable
-            ServerVariable dcsInputVariable = new ServerVariable() {
-                Name = DCS_INPUT_COMMAND,
-                Value = "",
-                VariableType = ServerVariable.ServerVariableType.STRING,
-                IsPersistent = true,
-                IsUserEditable = true
-            };
-            _changesBuffer.Add(dcsInputVariable.Name, dcsInputVariable);
+    private void RebuildFilter() {
+        var modules = AircraftModules.Resolve(_aircraft, _configurations);
+        var keys = modules.Append(_aircraft).Distinct().Where(_selections.ContainsKey).ToArray();
+        // Missing configuration means all variables; an explicit empty selection means none.
+        _allowed = keys.Length == 0 ? null : keys.Concat(AircraftModules.Shared)
+            .Where(_selections.ContainsKey).SelectMany(k => _selections[k]).ToHashSet(StringComparer.Ordinal);
+    }
+
+    public void FromBios<T>(string biosCode, T data) {
+        if (data is null) return;
+        lock (_gate) {
+            if (_disposed) return;
+            if (biosCode == BiosListener.AircraftNameBiosCode && data.ToString() is string aircraft && aircraft != _aircraft) {
+                _aircraft = aircraft;
+                _values.Clear();
+                foreach (var key in _pending.Keys.Where(k => k != InputCommand).ToArray()) _pending.Remove(key);
+                RebuildFilter();
+            }
+            if (string.IsNullOrEmpty(_aircraft)) return;
+            if (_values.TryGetValue(biosCode, out var previous) && Equals(previous, data)) return;
+            _values[biosCode] = data;
+            if (_allowed == null || _allowed.Contains(biosCode)) _pending["dcs_" + biosCode] = Variable(biosCode, data);
         }
+    }
 
-        public event EventHandler<TxRxNotificationEventArgs> UpdateSentNotification;
+    private static ServerVariable Variable(string code, object value) => new() {
+        Name = "dcs_" + code, Value = value,
+        VariableType = value is string ? ServerVariable.ServerVariableType.STRING : ServerVariable.ServerVariableType.NUMBER
+    };
+    private static ServerVariable CommandVariable() => new() {
+        Name = InputCommand, Value = "", VariableType = ServerVariable.ServerVariableType.STRING,
+        IsPersistent = true, IsUserEditable = true
+    };
 
-        public event EventHandler<TxRxNotificationEventArgs> UpdateBufferSizeNotification;
+    private void QueueSnapshot() {
+        foreach (var (code, value) in _values)
+            if (_allowed == null || _allowed.Contains(code)) _pending["dcs_" + code] = Variable(code, value);
+    }
 
-        private void MatricComm_OnVariablesChanged(object sender, ServerVariablesChangedEventArgs data) {
-            //Debug.WriteLine("Got variables changed event notification");
-            if (data.ChangedVariables.Contains(DCS_INPUT_COMMAND)) {
-                if (data.Variables[DCS_INPUT_COMMAND].Value == null) {
-                    return;
+    private void VariablesChanged(ServerVariablesChangedEventArgs data) {
+        if (!data.ChangedVariables.Contains(InputCommand) || !data.Variables.TryGetValue(InputCommand, out var variable) ||
+            variable?.Value is not string command || string.IsNullOrWhiteSpace(command)) return;
+        if (!_commands.Writer.TryWrite(command)) _logger.LogWarning("DCS command queue is full or stopped; command was not accepted");
+    }
+
+    private async Task ProcessCommandsAsync() {
+        try {
+            await foreach (var command in _commands.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false)) {
+                try {
+                    await _sendCommand(command, _cts.Token).ConfigureAwait(false);
+                    await _connection.SetVariablesAsync(new() { CommandVariable() }, _cts.Token).ConfigureAwait(false);
                 }
-                if (string.IsNullOrEmpty(data.Variables[DCS_INPUT_COMMAND].Value as string)) {
-                    return;
-                }
-                string command = data.Variables[DCS_INPUT_COMMAND].Value.ToString();
-#if DEBUG
-                Debug.WriteLine($"DCS-BIOS import command: {command}");
-#endif
-                _biosClient?.SendRaw(command); //method takes separate biosAddress and data, but in the end it is concatenated and sent via UDP anyway
-                //Reset the variable immediatelly
-                matricComm.SetVariables(new List<ServerVariable>() { new ServerVariable() {
-                    Name = DCS_INPUT_COMMAND,
-                    Value = "",
-                    VariableType = ServerVariable.ServerVariableType.STRING,
-                    IsPersistent = true,
-                    IsUserEditable = true
-                    }
-                });
-            }
-        }
-
-        private void MatricComm_OnControlInteraction(object sender, object data) {
-            //throw new NotImplementedException();
-        }
-
-        public void FromBios<T>(string biosCode, T data) {
-            if (biosCode == "_ACFT_NAME" && !data.ToString().Equals(_currentAircraftName)) {
-            //get list of user selected variables. If it doesn't exist do not filter, forward everything to MATRIC
-                //New aircraft, load config for aircraft
-                _currentAircraftName = data.ToString();
-#if DEBUG
-                Debug.WriteLine($"DCS-BIOS module detected {_currentAircraftName}");
-#endif
-                if (!Program.mwSettings.AircraftVariables.ContainsKey(_currentAircraftName)) {
-                    //Look for an alias
-                    if (Program.aircraftBiosConfigurations.Any(t => t.Value.Aliases.Contains(_currentAircraftName))) {
-                        _currentAircraftName = Program.aircraftBiosConfigurations.Where(t => t.Value.Aliases.Contains(_currentAircraftName)).FirstOrDefault().Key;
-                    }
-                }
-
-                if (Program.mwSettings.AircraftVariables.ContainsKey(_currentAircraftName)) {
-                    _allowedVariables.Clear();
-                    _allowedVariables.AddRange(Program.mwSettings.AircraftVariables[_currentAircraftName]);
-                    //Add common and metadata
-                    if (Program.mwSettings.AircraftVariables.ContainsKey(COMMON_DATA)) {
-                        _allowedVariables.AddRange(Program.mwSettings.AircraftVariables[COMMON_DATA]);
-                    }
-                    if (Program.mwSettings.AircraftVariables.ContainsKey(METADATA_START)) {
-                        _allowedVariables.AddRange(Program.mwSettings.AircraftVariables[METADATA_START]);
-                    }
-                    if (Program.mwSettings.AircraftVariables.ContainsKey(METADATA_END)) {
-                        _allowedVariables.AddRange(Program.mwSettings.AircraftVariables[METADATA_END]);
-                    }
-                }
-            }
-
-            if(string.IsNullOrEmpty(_currentAircraftName)) {
-                //Do not export anything until we know the module and can load variables configuration for that module
-                return;
-            }
-
-            if(_allowedVariables.Count > 0) {
-                if(!_allowedVariables.Contains(biosCode)) {
-                    return;
-                }
-            }
-
-            string varName = $"dcs_{biosCode}";
-            lock(locker) {
-                object currentData = null;
-                if (_dcsValues.TryGetValue(varName, out currentData)) {
-                    if (currentData.ToString() != data.ToString()) {
-                        //Variable has changed
-                        //add or replace in changes
-                        if (_changesBuffer.ContainsKey(varName)) {
-                            _changesBuffer[varName].Value = data;
-                        }
-                        else {
-                            if (data is string) {
-                                _changesBuffer.Add(varName, new ServerVariable() { Name = varName, 
-                                    Value = data.ToString(), 
-                                    VariableType = ServerVariable.ServerVariableType.STRING });
-                            }
-                            else {
-                                //int 
-                                _changesBuffer.Add(varName, new ServerVariable() { Name = varName, 
-                                    Value = data, 
-                                    VariableType = ServerVariable.ServerVariableType.NUMBER });
-                            }
-                        }
-                    }
-                    _dcsValues[varName] = data;
-                }
-                else {
-                    _dcsValues[varName] = data;
-                    //add or replace in changes
-                    if (_changesBuffer.ContainsKey(varName)) {
-                        _changesBuffer[varName].Value = data;
-                    }
-                    else {
-                        if (data is string) {
-                            _changesBuffer.Add(varName, new ServerVariable() { Name = varName, Value = data.ToString(), VariableType = ServerVariable.ServerVariableType.STRING });
-                        }
-                        else {
-                            //int 
-                            _changesBuffer.Add(varName, new ServerVariable() { Name = varName, Value = data, VariableType = ServerVariable.ServerVariableType.NUMBER });
-                        }
-                    }
-                }
-
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested) { break; }
+                catch (Exception ex) { _logger.LogError(ex, "Could not forward DCS input command"); }
             }
         }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
+    }
 
-        public void SendUpdates(object state) {
-#if DEBUG
-            Debug.WriteLine($"Sending updates, changes: {_changesBuffer.Keys.Count}");
-            foreach (var key in _changesBuffer.Keys) {
-                Debug.WriteLine($"{key}: {_changesBuffer[key].Value}");
-            }
-#endif
-            int bufferSize = _changesBuffer.Count;
-            Task.Run(() => {
-                UpdateBufferSizeNotification?.Invoke(this, new TxRxNotificationEventArgs(Math.Min(bufferSize, 200)));
-            });
-            int sent = 0;
-            lock(locker) {
-                if (_changesBuffer.Count >= MAX_VAR_LIST) {
-                    Dictionary<string, ServerVariable> sendBuffer = _changesBuffer.Take(MAX_VAR_LIST).ToDictionary();
-                    foreach (string key in sendBuffer.Keys) {
-                        _changesBuffer.Remove(key);
-                    }
-                    matricComm.SetVariables(sendBuffer.Values.ToList<ServerVariable>());
-                    sent = sendBuffer.Count;
+    private async Task RunAsync() {
+        try {
+            while (!_cts.IsCancellationRequested) {
+                try {
+                    await SendUpdatesAsync(_cts.Token).ConfigureAwait(false);
+                    Volatile.Write(ref _lastError, null);
                 }
-                else { 
-                    matricComm.SetVariables(_changesBuffer.Values.ToList<ServerVariable>());
-                    sent = _changesBuffer.Count;
-                    _changesBuffer.Clear();            
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested) { break; }
+                catch (Exception ex) {
+                    if (LastError != ex.Message) _logger.LogError(ex, "MATRIC update failed; pending values will be retried");
+                    Volatile.Write(ref _lastError, ex.Message);
                 }
-            }
-            Task.Run(() => UpdateSentNotification?.Invoke(this, new TxRxNotificationEventArgs(Math.Min(sent, 200))));
-        }
-
-        public void Dispose() {
-            _timer.Dispose();
-            if(matricComm != null) {
-                matricComm.Stop();
-                matricComm.Dispose();
+                await Task.Delay(TimeSpan.FromMilliseconds(1000d / UpdateFrequency), _cts.Token).ConfigureAwait(false);
             }
         }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
+    }
+
+    internal async Task SendUpdatesAsync(CancellationToken token = default) {
+        var now = _clock.GetTimestamp();
+        if (_lastProbe == null || _clock.GetElapsedTime(_lastProbe.Value, now) >= TimeSpan.FromSeconds(10)) {
+            _lastProbe = now;
+            await _connection.ProbeAsync(token).ConfigureAwait(false);
+        }
+        var connected = _connection.IsConnected;
+        var periodicRefresh = _clock.GetElapsedTime(_lastSnapshot, now) >= TimeSpan.FromSeconds(60);
+        lock (_gate) {
+            if (connected && (!_wasConnected || periodicRefresh)) {
+                _pending[InputCommand] = CommandVariable();
+                QueueSnapshot();
+                _lastSnapshot = now;
+                _logger.LogInformation("Refreshing MATRIC state ({Count} queued variables)", _pending.Count);
+            }
+        }
+        if (connected != _wasConnected) _logger.LogInformation("MATRIC {Status}", connected ? "responding" : "not responding");
+        _wasConnected = connected;
+        Volatile.Write(ref _lastSent, 0);
+        if (!connected) return;
+
+        List<ServerVariable> batch;
+        lock (_gate) batch = _pending.Values.Take(100).ToList();
+        if (batch.Count == 0) return;
+        await _connection.SetVariablesAsync(batch, token).ConfigureAwait(false);
+        lock (_gate) {
+            foreach (var item in batch)
+                // Preserve a newer value or refresh queued while the send was in progress.
+                if (_pending.TryGetValue(item.Name, out var pending) && ReferenceEquals(item, pending)) _pending.Remove(item.Name);
+        }
+        Volatile.Write(ref _lastSent, batch.Count);
+    }
+
+    public async ValueTask DisposeAsync() {
+        if (_disposed) return;
+        lock (_gate) _disposed = true;
+        _connection.VariablesChanged -= VariablesChanged;
+        _commands.Writer.TryComplete();
+        _cts.Cancel();
+        await Task.WhenAll(_worker ?? Task.CompletedTask, _commandWorker ?? Task.CompletedTask).ConfigureAwait(false);
+        await _connection.DisposeAsync().ConfigureAwait(false);
+        _cts.Dispose();
     }
 }

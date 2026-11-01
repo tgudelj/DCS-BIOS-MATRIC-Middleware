@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Linq;
 
 namespace DcsBios.Communicator.DataParsers
 {
@@ -9,8 +8,8 @@ namespace DcsBios.Communicator.DataParsers
 
         public int Length { get; }
         private readonly char[] _buffer;
-        private readonly long _bufferSizeBits;
-        private long _bufferFilledBits;
+        private readonly ulong _bufferSizeBits;
+        private ulong _bufferFilledBits;
 
         private bool BufferFilled => _bufferFilledBits == _bufferSizeBits;
 
@@ -22,7 +21,7 @@ namespace DcsBios.Communicator.DataParsers
 
             Length = length;
             _buffer = new char[length];
-            _bufferSizeBits = (long) Math.Pow(2, length) - 1;
+            _bufferSizeBits = length == 64 ? ulong.MaxValue : (1UL << length) - 1;
         }
 
         private void SetCharacter(int index, char ch)
@@ -30,7 +29,15 @@ namespace DcsBios.Communicator.DataParsers
             DataReady = false;
             _buffer[index] = ch;
 
-            if (!BufferFilled) _bufferFilledBits |= (long) Math.Pow(2, index);
+            if (!BufferFilled) _bufferFilledBits |= 1UL << index;
+        }
+
+        public void Reset()
+        {
+            Array.Clear(_buffer);
+            _bufferFilledBits = 0;
+            DataReady = false;
+            CurrentValue = string.Empty;
         }
 
         /// <summary>
@@ -44,13 +51,12 @@ namespace DcsBios.Communicator.DataParsers
             var done = false;
             if (Address <= address && address < Address + Length)
             {
-                var dataBytes = BitConverter.GetBytes(data).Select(d => (char)d).Take(2).ToArray();
-                SetCharacter(address - Address, dataBytes[0]);
+                SetCharacter(address - Address, (char)(data & 0xff));
                 if (address - Address + 1 == Length) done = true;
                 if (Address + Length > address + 1)
                 {
                     if (address - Address + 2 == Length) done = true;
-                    SetCharacter(address - Address + 1, dataBytes[1]);
+                    SetCharacter(address - Address + 1, (char)((data >> 8) & 0xff));
                 }
             }
 
@@ -59,7 +65,7 @@ namespace DcsBios.Communicator.DataParsers
                 DataReady = true;
             }
 
-            CurrentValue = string.Concat(_buffer);
+            CurrentValue = new string(_buffer);
         }
     }
 }

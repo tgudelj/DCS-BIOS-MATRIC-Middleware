@@ -200,7 +200,6 @@ namespace EXM.DBMM {
             txtAvailableFilter.Name = "txtAvailableFilter";
             txtAvailableFilter.Size = new Size(310, 27);
             txtAvailableFilter.TabIndex = 1;
-            txtAvailableFilter.KeyUp += txtAvailableFilter_KeyUp;
             // 
             // btnClearAvailableFilter
             // 
@@ -231,7 +230,6 @@ namespace EXM.DBMM {
             txtConfiguredFilter.Name = "txtConfiguredFilter";
             txtConfiguredFilter.Size = new Size(310, 27);
             txtConfiguredFilter.TabIndex = 31;
-            txtConfiguredFilter.KeyUp += txtConfiguredFilter_KeyUp;
             // 
             // FormVariablesConfiguration
             // 

@@ -42,16 +42,19 @@ namespace DcsBios.Communicator.Configuration
             {
                 foreach (var (key, value) in result)
                 {
-                    aliases.Add(key, value);
+                    if (!aliases.TryGetValue(key, out var names)) aliases[key] = names = new();
+                    names.UnionWith(value);
                 }
             }
 
-            var configTasks = configLocations
-                .SelectMany(GetAllJsonFilesBelowDirectory)
+            var configTasks = allFiles
                 .Where(f => f.Name != configDirectory)
                 .Select(f => BuildFromConfiguration(f, aliases, logger));
 
-            return (await Task.WhenAll(configTasks)).Where(c => c != null).Select(c => c!).ToArray();
+            var configurations = (await Task.WhenAll(configTasks)).Where(c => c != null).Select(c => c!).ToArray();
+            foreach (var duplicate in configurations.GroupBy(c => c.AircraftName).Where(g => g.Count() > 1))
+                logger?.LogWarning("Duplicate module {Module}; using the first configuration", duplicate.Key);
+            return configurations.DistinctBy(c => c.AircraftName).ToArray();
         }
 
         /// <summary>
@@ -63,10 +66,9 @@ namespace DcsBios.Communicator.Configuration
         /// <returns></returns>
         public static async Task<AircraftBiosConfiguration?> BuildFromConfiguration(FileSystemInfo configFile, Dictionary<string, HashSet<string>>? allAliases = null, ILogger<AircraftBiosConfiguration>? logger = null)
         {
-            var fileData = await File.ReadAllTextAsync(configFile.FullName);
-
             try
             {
+                var fileData = await File.ReadAllTextAsync(configFile.FullName);
                 var dcsConfiguration = JsonConvert.DeserializeObject<AircraftBiosConfiguration>(fileData,
                     new JsonSerializerSettings
                     {
@@ -81,6 +83,14 @@ namespace DcsBios.Communicator.Configuration
                     throw new JsonSerializationException();
                 }
 
+                foreach (var category in dcsConfiguration.Values)
+                {
+                    if (category is null) throw new JsonSerializationException("Category is null.");
+                    foreach (var control in category.Values)
+                        if (control is null || string.IsNullOrWhiteSpace(control.Identifier) || control.Outputs is null || control.Outputs.Any(o => o is null))
+                            throw new JsonSerializationException("Control requires an identifier and an outputs list without null entries.");
+                }
+
                 dcsConfiguration.AircraftName = Path.GetFileNameWithoutExtension(configFile.FullName);
                 dcsConfiguration.Aliases =
                     allAliases != null && allAliases.TryGetValue(dcsConfiguration.AircraftName, out var aircraftAliases)
@@ -89,10 +99,9 @@ namespace DcsBios.Communicator.Configuration
 
                 return dcsConfiguration;
             }
-            catch (JsonSerializationException ex)
+            catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
             {
-                logger?.LogWarning("Error parsing config file {ConfigFile}, skipping...", configFile.FullName);
-                logger?.LogDebug(ex, "exception:");
+                logger?.LogWarning(ex, "Cannot load config file {ConfigFile}; skipping", configFile.FullName);
                 return null;
             }
         }
@@ -105,20 +114,21 @@ namespace DcsBios.Communicator.Configuration
         /// <returns>BIOS module -> [DCS code]</returns>
         private static async Task<Dictionary<string, HashSet<string>>> GetAliases(FileSystemInfo aliasFile, ILogger<AircraftBiosConfiguration>? logger = null)
         {
-            var fileData = await File.ReadAllTextAsync(aliasFile.FullName);
             try
             {
+                var fileData = await File.ReadAllTextAsync(aliasFile.FullName);
                 var dict = JsonConvert.DeserializeObject<Dictionary<string, HashSet<string>>>(fileData) ??
                            new Dictionary<string, HashSet<string>>();
 
+                if (dict.Any(kvp => kvp.Value is null || kvp.Value.Any(string.IsNullOrWhiteSpace)))
+                    throw new JsonSerializationException("Alias lists must contain module names.");
                 var r = dict.SelectMany(kvp => kvp.Value.Select(module => (module, kvp.Key))).GroupBy(t => t.module)
                     .ToDictionary(g => g.Key, g2 => g2.Select(t => t.Key).ToHashSet());
                 return r;
             }
-            catch (JsonSerializationException ex)
+            catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
             {
-                logger?.LogWarning("Error parsing alias file {AliasFile}, skipping...", aliasFile.FullName);
-                logger?.LogDebug(ex, "exception:");
+                logger?.LogWarning(ex, "Cannot load alias file {AliasFile}; skipping", aliasFile.FullName);
                 return new Dictionary<string, HashSet<string>>();
             }
         }

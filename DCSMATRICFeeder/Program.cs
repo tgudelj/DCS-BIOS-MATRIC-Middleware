@@ -6,8 +6,9 @@ using System.Diagnostics;
 
 namespace EXM.DBMM {
     internal static class Program {
-        internal static ILoggerFactory loggerFactory;
-        internal static ILogger logger;
+        internal static ILoggerFactory loggerFactory = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance;
+        internal static ILogger logger = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+        internal static FileLoggerProvider fileLogger = new();
         internal static Dictionary<string, AircraftBiosConfiguration> aircraftBiosConfigurations = new Dictionary<string, AircraftBiosConfiguration>();
         internal static MiddlewareSettings mwSettings = new MiddlewareSettings();
         [STAThread]
@@ -18,7 +19,8 @@ namespace EXM.DBMM {
             loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => {
                 builder
                 .AddConsole()
-                .AddDebug();
+                .AddDebug()
+                .AddProvider(fileLogger);
             });
             logger = loggerFactory.CreateLogger("DCS-BIOS-MATRIC");
 
@@ -27,7 +29,9 @@ namespace EXM.DBMM {
             Application.SetCompatibleTextRenderingDefault(false);
 
             ApplicationConfiguration.Initialize();
-            Application.Run(new FormMain());
+            logger.LogInformation("DCS-BIOS MATRIC middleware starting");
+            try { Application.Run(new FormMain()); }
+            finally { logger.LogInformation("Application stopped"); loggerFactory.Dispose(); }
         }
     }
 }

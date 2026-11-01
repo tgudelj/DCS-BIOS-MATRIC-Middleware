@@ -1,5 +1,9 @@
 ﻿using System.ComponentModel;
 
+using System.Net;
+using System.Net.Sockets;
+using Newtonsoft.Json;
+
 namespace EXM.DBMM {
     /// <summary>
     /// Represents DCS-BIOS MATRIC middleware configuration
@@ -45,5 +49,28 @@ namespace EXM.DBMM {
         /// Desired updates per second
         /// </summary>
         public int UpdateFrequency { get; set; }
+
+        internal void Validate() {
+            if (!IPAddress.TryParse(ListenAddress, out var address) || address.AddressFamily != AddressFamily.InterNetwork ||
+                address.GetAddressBytes()[0] is < 224 or > 239)
+                throw new ArgumentException("Enter an IPv4 multicast listener address (224.0.0.0 to 239.255.255.255).");
+            if (ListenPort is < 1 or > 65535 || ImportPort is < 1 or > 65535)
+                throw new ArgumentException("Ports must be between 1 and 65535.");
+            if (UpdateFrequency is < 1 or > 25) throw new ArgumentException("Update frequency must be between 1 and 25.");
+            ValidateSelections(AircraftVariables);
+        }
+
+        internal static Dictionary<string, List<string>> ParseSelections(string json) {
+            if (string.IsNullOrWhiteSpace(json)) return new();
+            var selections = JsonConvert.DeserializeObject<Dictionary<string, List<string>>>(json)
+                ?? throw new JsonSerializationException("Variable selections must be a JSON object.");
+            ValidateSelections(selections);
+            return selections.ToDictionary(p => p.Key, p => p.Value.Distinct(StringComparer.Ordinal).ToList());
+        }
+
+        private static void ValidateSelections(Dictionary<string, List<string>> selections) {
+            if (selections == null || selections.Any(p => string.IsNullOrWhiteSpace(p.Key) || p.Value == null || p.Value.Any(string.IsNullOrWhiteSpace)))
+                throw new JsonSerializationException("Each module must have a list of nonempty variable names.");
+        }
     }
 }

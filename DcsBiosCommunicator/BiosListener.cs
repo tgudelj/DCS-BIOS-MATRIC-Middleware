@@ -1,245 +1,168 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using DcsBios.Communicator.Configuration;
 using DcsBios.Communicator.DataParsers;
 using Microsoft.Extensions.Logging;
 
-namespace DcsBios.Communicator
+namespace DcsBios.Communicator;
+
+public sealed class BiosListener : IDisposable, IAsyncDisposable
 {
-    public class BiosListener : IDisposable
+    public const string AircraftNameBiosCode = "_ACFT_NAME";
+    private readonly BiosStateMachine _parser;
+    private readonly IUdpReceiveClient _client;
+    private readonly IBiosTranslator _translator;
+    private readonly ILogger<BiosListener> _log;
+    private readonly Dictionary<string, AircraftBiosConfiguration> _configurations = new();
+    private readonly Dictionary<string, Dictionary<int, List<IntegerParser>>> _integers = new();
+    private readonly Dictionary<string, Dictionary<int, List<StringParser>>> _strings = new();
+    private readonly List<StringParser> _aircraftParsers = new();
+    private readonly CancellationTokenSource _cts = new();
+    private string[] _activeModules = Array.Empty<string>();
+    private Task? _task;
+    private long _lastPacket;
+    private string _activeAircraft = "";
+    private string? _lastError;
+    private bool _disposed;
+
+    public string ActiveAircraft => Volatile.Read(ref _activeAircraft);
+    public string? LastError => Volatile.Read(ref _lastError);
+    public bool IsReceiving => Interlocked.Read(ref _lastPacket) is var timestamp && timestamp != 0 &&
+                               Stopwatch.GetElapsedTime(timestamp) < TimeSpan.FromSeconds(3);
+    public Task Completion => _task ?? Task.CompletedTask;
+
+    public BiosListener(in IUdpReceiveClient client, in IBiosTranslator biosTranslator, in ILogger<BiosListener> logger)
     {
-        public const string AircraftNameBiosCode = "_ACFT_NAME";
+        _client = client;
+        _translator = biosTranslator;
+        _log = logger;
+        _parser = new BiosStateMachine(logger);
+        _parser.OnDataWrite += OnBiosDataReceived;
+    }
 
-        private readonly BiosStateMachine _parser;
-        private readonly IUdpReceiveClient _client;
-        private readonly Dictionary<int, IntegerHandler> _integerActions = new();
-        private readonly Dictionary<int, IList<StringParser>> _stringActions = new();
-        private readonly Dictionary<string, Dictionary<int, IntegerHandler>> _moduleIntegerActions = new();
-        private readonly Dictionary<string, Dictionary<int, StringParser>> _moduleStringActions = new();
-        private string? _activeAircraft;
-        private Task? _delegateThread;
-
-        private readonly CancellationTokenSource _cts = new();
-
-        private readonly IBiosTranslator _biosTranslator;
-        private readonly ILogger<BiosListener> _log;
-
-        public BiosListener(in IUdpReceiveClient client, in IBiosTranslator biosTranslator, in ILogger<BiosListener> logger)
+    public void RegisterConfiguration(AircraftBiosConfiguration configuration)
+    {
+        if (_task != null) throw new InvalidOperationException("Register configurations before starting the listener.");
+        if (!_configurations.TryAdd(configuration.AircraftName, configuration))
+            throw new ArgumentException($"Duplicate module: {configuration.AircraftName}");
+        var integers = _integers[configuration.AircraftName] = new();
+        var strings = _strings[configuration.AircraftName] = new();
+        foreach (var control in configuration.Values.SelectMany(c => c.Values))
+        foreach (var output in control.Outputs)
         {
-            _client = client;
-            _biosTranslator = biosTranslator;
-            _log = logger;
-            _parser = new BiosStateMachine(logger);
-            _parser.OnDataWrite += OnBiosDataReceived;
-        }
-
-        public void RegisterConfiguration(AircraftBiosConfiguration configuration)
-        {
-            _log.LogDebug("Loading config for module {Module}", configuration.AircraftName);
-            foreach (var control in configuration.Values.SelectMany(c => c.Values))
+            switch (output)
             {
-                RegisterControl(configuration.AircraftName, control);
+                case OutputInteger i when i.Address is >= 0 and <= 65534 && i.Mask is > 0 and <= 65535 && i.ShiftBy is >= 0 and <= 15:
+                    Add(integers, i.Address, new IntegerParser(i.Mask, i.ShiftBy, control.Identifier));
+                    break;
+                case OutputString s when s.Address >= 0 && s.MaxLength is >= 1 and <= 64 && s.Address + s.MaxLength <= 65536:
+                    var parser = new StringParser(s.Address, s.MaxLength, control.Identifier);
+                    if (control.Identifier == AircraftNameBiosCode) _aircraftParsers.Add(parser);
+                    else
+                        for (var offset = 0; offset < s.MaxLength; offset++) Add(strings, s.Address + offset, parser);
+                    break;
+                default:
+                    _log.LogWarning("Skipping unsupported or invalid output {Type} for {Module}/{Control}",
+                        output?.Type, configuration.AircraftName, control.Identifier);
+                    break;
             }
         }
+    }
 
-        private void RegisterControl(string module, BiosControl control)
+    private static void Add<T>(Dictionary<int, List<T>> map, int address, T parser)
+    {
+        if (!map.TryGetValue(address, out var parsers)) map[address] = parsers = new();
+        parsers.Add(parser);
+    }
+
+    private void OnBiosDataReceived(int address, int data)
+    {
+        // Only the aircraft-name control may be decoded before the module is known.
+        foreach (var parser in _aircraftParsers)
         {
-            foreach (var output in control.Outputs)
-            {
-                _log.LogTrace("Registering control {Control} at {Address}", control.Identifier, output.Address);
-
-                switch (output)
-                {
-                    case OutputInteger io:
-                        RegisterIntegerControl(module, control, io);
-                        break;
-                    case OutputString so:
-                        RegisterStringControl(module, control, so);
-                        break;
-                    default:
-                        _log.LogCritical("invalid control output type {OutputType}", output.GetType());
-                        throw new ArgumentException($"invalid output type: {output.GetType()}");
-                }
-            }
-        }
-
-        private void RegisterIntegerControl(string module, BiosControl control, OutputInteger output)
-        {
-            var newParser = new IntegerParser(output.Mask, output.ShiftBy, control.Identifier);
-            if (!_moduleIntegerActions.ContainsKey(module))
-                _moduleIntegerActions[module] = new Dictionary<int, IntegerHandler>();
-            if (_moduleIntegerActions[module].TryGetValue(output.Address, out var moduleHandler))
-            {
-                moduleHandler.MaskShifts.Add(newParser);
-            }
-            else
-            {
-                RegisterIntegerAddress(module, new IntegerHandler(output.Address, new[] { newParser }));
-            }
-
-            if (_integerActions.TryGetValue(output.Address, out var handler))
-            {
-                handler.MaskShifts.Add(newParser);
-            }
-            else
-            {
-                RegisterIntegerAddress(new IntegerHandler(output.Address, new[] { newParser }));
-            }
-        }
-
-        private void RegisterStringControl(string module, BiosControl control, OutputString output)
-        {
-            RegisterStringAddress(module, new StringParser(output.Address, output.MaxLength, control.Identifier));
-        }
-
-        private void RegisterIntegerAddress(IntegerHandler handler)
-        {
-            _integerActions[handler.Address] = handler;
-        }
-
-        private void RegisterIntegerAddress(string module, IntegerHandler handler)
-        {
-            if (!_moduleIntegerActions.ContainsKey(module))
-                _moduleIntegerActions[module] = new Dictionary<int, IntegerHandler>();
-            _moduleIntegerActions[module][handler.Address] = handler;
-        }
-
-        private void RegisterStringAddress(string module, StringParser parser)
-        {
-            if (!_moduleStringActions.TryGetValue(module, out var moduleParsers))
-                moduleParsers = new Dictionary<int, StringParser>();
-            for (var i = 0; i < parser.Length; i++)
-            {
-                moduleParsers.Add(parser.Address + i, parser);
-
-                // the master list can have more than one item for a given module. Frankly if we ever have to use this we're probably
-                // in some deep doo-doo, but it's better to be defensive given https://github.com/charliefoxtwo/TouchDCS/issues/18
-                if (!_stringActions.TryGetValue(parser.Address + i, out var parsers)) parsers = new List<StringParser>();
-                parsers.Add(parser);
-                _stringActions[parser.Address + i] = parsers;
-            }
-
-            _moduleStringActions[module] = moduleParsers;
-        }
-
-        private void OnBiosDataReceived(int address, int data)
-        {
-            _log.LogTrace("{Address:x4} -> got data -> {Data:x4}", address, data);
-
-            if (_activeAircraft is not null &&
-                _moduleIntegerActions.TryGetValue(_activeAircraft, out var integerActions) &&
-                integerActions.TryGetValue(address, out var handler) ||
-                _integerActions.TryGetValue(address, out handler))
-            {
-                _log.LogTrace("{Address:x4} -> got int data -> {Data:x4}", address, data);
-                foreach (var mask in handler.MaskShifts)
-                {
-                    mask.AddData(address, data);
-                    _biosTranslator.FromBios(mask.BiosCode, mask.CurrentValue);
-                }
-            }
-
-            // some controls are registered to both strings and integers, because life is fun like that.
-            if (_activeAircraft is not null &&
-                _moduleStringActions.TryGetValue(_activeAircraft, out var stringActions) &&
-                stringActions.TryGetValue(address, out var parser))
-            {
-                ProcessStringData(parser, address, data);
-            }
-            else if (_stringActions.TryGetValue(address, out var parsers))
-            {
-                foreach (var p in parsers)
-                {
-                    ProcessStringData(p, address, data);
-                }
-            }
-        }
-
-        private void ProcessStringData(StringParser parser, int address, int data)
-        {
-            _log.LogTrace("{Address:x4} -> got string data -> {Data:x4}", address, data);
-
+            if (address < parser.Address || address >= parser.Address + parser.Length) continue;
             parser.AddData(address, data);
-
-            var result = parser.CurrentValue;
-            if (parser.BiosCode == AircraftNameBiosCode)
+            if (!parser.DataReady) continue;
+            var name = parser.CurrentValue.Split('\0')[0];
+            if (name != _activeAircraft)
             {
-                if (!parser.DataReady) return;
-                // name is fixed-length and null-terminated. fun.
-                result = result.Split(default(char))[0];
-                if (string.IsNullOrEmpty(result)) return; // we just haven't loaded the aircraft name yet
-                if (_activeAircraft != result)
+                Volatile.Write(ref _activeAircraft, name);
+                _activeModules = AircraftModules.Resolve(name, _configurations.Values)
+                    .Concat(AircraftModules.Shared.Where(_configurations.ContainsKey)).Distinct().ToArray();
+                foreach (var p in _strings.Values.SelectMany(m => m.Values).SelectMany(p => p).Distinct()) p.Reset();
+                _log.LogInformation("Active aircraft: {Aircraft}; modules: {Modules}", name, string.Join(", ", _activeModules));
+            }
+            _translator.FromBios(AircraftNameBiosCode, name);
+        }
+        if (string.IsNullOrEmpty(_activeAircraft)) return;
+        foreach (var module in _activeModules)
+        {
+            if (_integers[module].TryGetValue(address, out var integers))
+                foreach (var parser in integers)
                 {
-                    _activeAircraft = result;
-                    _log.LogInformation("New aircraft detected -> {{{ActiveAircraft}}}", _activeAircraft);
+                    parser.AddData(address, data);
+                    _translator.FromBios(parser.BiosCode, parser.CurrentValue);
                 }
-            }
-
-            _biosTranslator.FromBios(parser.BiosCode, result);
-        }
-
-        public void Start()
-        {
-            _log.LogDebug("Starting DCS-BIOS listener...");
-
-            if (_delegateThread is not null)
-            {
-                _log.LogWarning("DCS-BIOS listener thread already started");
-            }
-            else if (_cts.IsCancellationRequested)
-            {
-                _log.LogWarning("DCS-BIOS listener cancellation requested, aborting start...");
-            }
-            else
-            {
-                _delegateThread = Listener(_cts.Token);
-            }
-
-            _log.LogInformation("DCS-BIOS listener started");
-        }
-
-        /// <summary>
-        /// Stops the existing listener thread and enacts a blacking wait until it is complete.
-        /// </summary>
-        public void Stop()
-        {
-            _log.LogDebug("Stopping DCS-BIOS listener...");
-            _cts.Cancel();
-            //_delegateThread?.Wait();
-            _delegateThread?.Wait(500);
-            _log.LogInformation("DCS-BIOS listener stopped");
-        }
-
-        private async Task Listener(CancellationToken ctx)
-        {
-            while (!ctx.IsCancellationRequested)
-            {
-                try
+            if (_strings[module].TryGetValue(address, out var strings))
+                foreach (var parser in strings)
                 {
-                    _log.LogTrace("awaiting bios data...");
-                    var data = await _client.ReceiveAsync();
-                    _log.LogTrace("bios data received of length {DataLength}", data.Buffer.Length);
-                    _parser.ProcessBytes(data.Buffer);
+                    parser.AddData(address, data);
+                    _translator.FromBios(parser.BiosCode, parser.CurrentValue);
                 }
-                catch (Exception ex)
-                {
-                    _log.LogCritical("Critical exception in Bios Listener: {Exception}", ex);
-                    throw;
-                }
-            }
-
-            _log.LogWarning("Stopping DCS-BIOS Listener...");
         }
+    }
 
-        public void Dispose()
+    public void Start()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_task != null || _cts.IsCancellationRequested) throw new InvalidOperationException("Create a new listener for each session.");
+        _task = Task.Run(() => ListenAsync(_cts.Token));
+        _log.LogInformation("DCS-BIOS listener started");
+    }
+
+    private async Task ListenAsync(CancellationToken token)
+    {
+        try
         {
-            GC.SuppressFinalize(this);
-            Stop();
-            _delegateThread?.Dispose();
-            _cts.Dispose();
+            while (true)
+            {
+                var packet = await _client.ReceiveAsync(token).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                if (packet.Buffer.Length == 0) continue;
+                Interlocked.Exchange(ref _lastPacket, Stopwatch.GetTimestamp());
+                _parser.ProcessBytes(packet.Buffer);
+            }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
+        catch (SocketException) when (token.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            Volatile.Write(ref _lastError, ex.Message);
+            _log.LogError(ex, "DCS-BIOS listener stopped unexpectedly");
+        }
+    }
+
+    public async Task StopAsync()
+    {
+        if (_disposed) return;
+        _cts.Cancel();
+        if (_task != null) await _task.ConfigureAwait(false);
+    }
+
+    public void Stop() => StopAsync().GetAwaiter().GetResult();
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        await StopAsync().ConfigureAwait(false);
+        _disposed = true;
+        _parser.OnDataWrite -= OnBiosDataReceived;
+        _cts.Dispose();
     }
 }

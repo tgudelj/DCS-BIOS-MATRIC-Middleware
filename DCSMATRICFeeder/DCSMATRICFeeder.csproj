@@ -3,6 +3,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
 	<Deterministic>False</Deterministic>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>

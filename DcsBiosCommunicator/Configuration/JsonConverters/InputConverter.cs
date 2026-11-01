@@ -22,9 +22,9 @@ namespace DcsBios.Communicator.Configuration.JsonConverters
             var typeString = obj.GetValue(nameof(BiosInput.Interface), StringComparison.OrdinalIgnoreCase);
 
             // Process the Result property
-            if (typeString is null) throw new ArgumentException("configuration input doesn't contain a type");
+            if (typeString?.Type != JTokenType.String) throw new JsonSerializationException("Configuration input requires an interface string.");
 
-            var returnType = BiosInput.GetTypeForType(typeString.Value<string>());
+            var returnType = BiosInput.GetTypeForType(typeString.Value<string>()!);
 
             var contract = (JsonObjectContract)serializer.ContractResolver.ResolveContract(returnType);
 
