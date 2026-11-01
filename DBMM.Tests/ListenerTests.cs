@@ -1,12 +1,35 @@
 using System.Net.Sockets;
 using DcsBios.Communicator;
 using DcsBios.Communicator.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DBMM.Tests;
 
 public class ListenerTests {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(16)]
+    public async Task ConstantZeroOutputsExportZeroWithoutWarnings(int shift) {
+        var config = await TestSupport.Config("A", "WIPER_OFF");
+        var output = (OutputInteger)config["Test"]["WIPER_OFF"].Outputs.Single();
+        output.Mask = 0;
+        output.MaxValue = 0;
+        output.ShiftBy = shift;
+        var client = new PacketClient();
+        var capture = new Capture();
+        var log = new RecordingLogger();
+        await using var listener = new BiosListener(client, capture, log);
+        listener.RegisterConfiguration(await TestSupport.Metadata());
+        listener.RegisterConfiguration(config);
+        listener.Start();
+        client.Push(TestSupport.Packet(TestSupport.Aircraft("A"), TestSupport.Word(output.Address, 65535)));
+        await TestSupport.Until(() => capture.Values.Any(p => p.code == "WIPER_OFF"));
+        Assert.Equal(0, Assert.Single(capture.Values, p => p.code == "WIPER_OFF").value);
+        Assert.Empty(log.Warnings);
+    }
+
     [Fact]
     public async Task DispatchUsesOnlyActiveAliasAndSharedModules() {
         var client = new PacketClient();
@@ -58,7 +81,19 @@ public class ListenerTests {
         var config = await TestSupport.Config("A");
         config["Test"]["VALUE"].Outputs.Add(new OutputUnknown { Type = "future" });
         config["Test"]["VALUE"].Outputs.Add(new OutputString { Address = 20, MaxLength = 0 });
-        await using var listener = new BiosListener(new PacketClient(), new Capture(), NullLogger<BiosListener>.Instance);
+        config["Test"]["VALUE"].Outputs.Add(new OutputInteger { Address = 20, Mask = 0, MaxValue = 1, ShiftBy = 16 });
+        var log = new RecordingLogger();
+        await using var listener = new BiosListener(new PacketClient(), new Capture(), log);
         listener.RegisterConfiguration(config);
+        Assert.Equal(3, log.Warnings.Count);
+    }
+
+    private sealed class RecordingLogger : ILogger<BiosListener> {
+        public System.Collections.Concurrent.ConcurrentQueue<string> Warnings { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) {
+            if (level >= LogLevel.Warning) Warnings.Enqueue(formatter(state, exception));
+        }
     }
 }

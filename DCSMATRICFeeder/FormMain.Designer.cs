@@ -57,7 +57,7 @@
             healthPanel = new FlowLayoutPanel();
             lblBiosHealth = new Label();
             lblMatricHealth = new Label();
-            lblActiveAircraft = new Label();
+            lblActiveModule = new Label();
             healthTimer = new System.Windows.Forms.Timer(components);
             ((System.ComponentModel.ISupportInitialize)txtBIOSListenPort).BeginInit();
             groupBox1.SuspendLayout();
@@ -215,7 +215,7 @@
             //
             healthPanel.Controls.Add(lblBiosHealth);
             healthPanel.Controls.Add(lblMatricHealth);
-            healthPanel.Controls.Add(lblActiveAircraft);
+            healthPanel.Controls.Add(lblActiveModule);
             healthPanel.FlowDirection = FlowDirection.TopDown;
             healthPanel.Location = new Point(12, 100);
             healthPanel.Name = "healthPanel";
@@ -241,14 +241,14 @@
             lblMatricHealth.TabIndex = 1;
             lblMatricHealth.Text = "MATRIC: stopped";
             //
-            // lblActiveAircraft
+            // lblActiveModule
             //
-            lblActiveAircraft.AutoSize = true;
-            lblActiveAircraft.Location = new Point(3, 38);
-            lblActiveAircraft.Name = "lblActiveAircraft";
-            lblActiveAircraft.Size = new Size(78, 19);
-            lblActiveAircraft.TabIndex = 2;
-            lblActiveAircraft.Text = "Aircraft: —";
+            lblActiveModule.AutoSize = true;
+            lblActiveModule.Location = new Point(3, 38);
+            lblActiveModule.Name = "lblActiveModule";
+            lblActiveModule.Size = new Size(78, 19);
+            lblActiveModule.TabIndex = 2;
+            lblActiveModule.Text = "Module: —";
             // 
             // btnFilterDialog
             // 
@@ -461,7 +461,7 @@
         private FlowLayoutPanel healthPanel;
         private Label lblBiosHealth;
         private Label lblMatricHealth;
-        private Label lblActiveAircraft;
+        private Label lblActiveModule;
         private System.Windows.Forms.Timer healthTimer;
     }
 }

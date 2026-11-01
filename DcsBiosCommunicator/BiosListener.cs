@@ -60,6 +60,11 @@ public sealed class BiosListener : IDisposable, IAsyncDisposable
                 case OutputInteger i when i.Address is >= 0 and <= 65534 && i.Mask is > 0 and <= 65535 && i.ShiftBy is >= 0 and <= 15:
                     Add(integers, i.Address, new IntegerParser(i.Mask, i.ShiftBy, control.Identifier));
                     break;
+                // DCS-BIOS also declares constant-zero outputs, including selectors with shift_by = 16.
+                // They carry no changing bits, but remain valid outputs and must not cause startup warnings.
+                case OutputInteger i when i.Address is >= 0 and <= 65534 && i.Mask == 0 && i.MaxValue == 0 && i.ShiftBy is >= 0 and <= 16:
+                    Add(integers, i.Address, new IntegerParser(i.Mask, i.ShiftBy, control.Identifier));
+                    break;
                 case OutputString s when s.Address >= 0 && s.MaxLength is >= 1 and <= 64 && s.Address + s.MaxLength <= 65536:
                     var parser = new StringParser(s.Address, s.MaxLength, control.Identifier);
                     if (control.Identifier == AircraftNameBiosCode) _aircraftParsers.Add(parser);

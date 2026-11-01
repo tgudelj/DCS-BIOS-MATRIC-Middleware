@@ -48,6 +48,10 @@ public class FormTests {
                 saved.UpdateFrequency = 25;
                 saved.AircraftVariables = "{}";
                 using var form = new FormMain();
+                var moduleLabel = (Label)form.Controls.Find("lblActiveModule", true).Single();
+                Assert.Equal("Module: —", moduleLabel.Text);
+                Invoke(form, "RefreshHealth");
+                Assert.Equal("Module: —", moduleLabel.Text);
                 Invoke(form, "LoadSettings");
                 var settings = form.ReadSettingsFromControls();
                 Assert.Equal(8888, settings.ImportPort);

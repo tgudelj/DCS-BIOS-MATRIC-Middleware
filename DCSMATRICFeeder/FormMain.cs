@@ -169,7 +169,7 @@ public partial class FormMain : Form {
             lblBiosHealth.Text = _transitioning ? "DCS-BIOS: changing state…" : "DCS-BIOS: stopped";
             lblMatricHealth.Text = "MATRIC: stopped";
             lblBiosHealth.ForeColor = lblMatricHealth.ForeColor = SystemColors.ControlText;
-            lblActiveAircraft.Text = "Aircraft: —";
+            lblActiveModule.Text = "Module: —";
             pbBuffer.Value = pbSentVars.Value = 0;
             return;
         }
@@ -179,7 +179,7 @@ public partial class FormMain : Form {
         lblBiosHealth.ForeColor = listener.LastError != null ? Color.Firebrick : listener.IsReceiving ? Color.DarkGreen : Color.DarkGoldenrod;
         lblMatricHealth.Text = "MATRIC: " + (translator.LastError != null ? "send error; see logs" : translator.IsMatricConnected ? "responding" : "waiting / not responding");
         lblMatricHealth.ForeColor = translator.IsMatricConnected && translator.LastError == null ? Color.DarkGreen : Color.DarkGoldenrod;
-        lblActiveAircraft.Text = "Aircraft: " + (string.IsNullOrEmpty(listener.ActiveAircraft) ? "waiting for detection" : listener.ActiveAircraft);
+        lblActiveModule.Text = "Module: " + (string.IsNullOrEmpty(listener.ActiveAircraft) ? "waiting for detection" : listener.ActiveAircraft);
         pbBuffer.Value = Math.Min(translator.PendingCount, pbBuffer.Maximum);
         pbSentVars.Value = Math.Min(translator.LastSentCount, pbSentVars.Maximum);
     }
