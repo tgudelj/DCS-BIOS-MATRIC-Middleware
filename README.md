@@ -1,50 +1,56 @@
-
 # DCS BIOS MATRIC Middleware
-<img src="https://github.com/tgudelj/DCS-BIOS-MATRIC-Middleware/assets/1483482/d1162be3-0e6f-4650-a567-0def8886123d" />
 
+DCS-BIOS MATRIC Middleware (DBMM) connects [DCS World](https://www.digitalcombatsimulator.com/) to [MATRIC](https://matricapp.com). Indicators and displays on your MATRIC deck can follow the cockpit state, and MATRIC controls can send commands to DCS-BIOS.
 
-DCS BIOS MATRIC Middleware is a program which provides integration between [DCS World flight simulator](**https://www.digitalcombatsimulator.com/) and [MATRIC](https://matricapp.com) utilizing DCS-BIOS to read data from DCS in real time and push it to MATRIC as variables.
-This enables MATRIC users to bind control states to actual flightsim state (e.g. indicators, displays etc.). 
-DCS BIOS Middleware is based on excellent work done by [charliefoxtwo](https://github.com/charliefoxtwo) DCS-BIOS-Communicator library https://github.com/charliefoxtwo/DCS-BIOS-Communicator.
+[Download the latest release](https://github.com/tgudelj/DCS-BIOS-MATRIC-Middleware/releases) · [Read the user manual](DCSMATRICFeeder/DCSMATRICManual.pdf)
 
+![Main window showing connection status and the Module label](docs/screenshots/main-window.png)
 
+## Getting started
 
-![image](https://github.com/tgudelj/DCS-BIOS-MATRIC-Middleware/assets/1483482/ef91ba43-6092-412e-9998-aac2a86e349d)
+1. Install and configure DCS-BIOS, and enable third-party integration in MATRIC Server. Restart MATRIC Server if prompted.
+2. Download DBMM, extract it to a folder, and open the app. The standalone download includes the runtime; the framework-dependent download requires the .NET 8 Desktop Runtime for Windows x64.
+3. Check the **DCS-BIOS instance** folder. Use **Browse...** to select the `doc\json` folder inside the DCS-BIOS installation you use.
+4. Open **Configure export variables**, choose the variables your deck needs, and click **Save**.
+5. Click **START**, then load a cockpit in DCS. Check the **DCS-BIOS**, **MATRIC**, and **Module** lines in the Status area.
 
-<img src="https://github.com/tgudelj/DCS-BIOS-MATRIC-Middleware/assets/1483482/34fd3a8c-b5c5-4b87-9751-2420596d3665" width="480" />
+The default listener address is `239.255.50.10`, the listener port is `5010`, and the import port is `7778`. Leave these unchanged unless your DCS-BIOS setup uses different values.
 
+**START** saves your connection settings and changes to **STOP** while running. Stop the connection before changing the folder, listener address, or ports. The **Update frequency** slider and saved variable selections can be changed while running.
 
-## Features
+## Connection status
 
-- Parses data from DCS-BIOS and exports it to MATRIC variables
-- Reads a "well known" variable called DCS_INPUT_COMMAND from MATRIC and sends it to DCS-BIOS input interface
-- Easy setup, just unzip to folder
+- **DCS-BIOS: receiving** means simulator data is arriving. **Waiting for stream** means DBMM is waiting for data from DCS-BIOS.
+- **MATRIC: responding** means MATRIC is available. **Waiting / not responding** means DBMM is waiting for MATRIC Server.
+- **Module** shows the detected DCS module. A dash or **waiting for detection** means a module has not yet been identified.
+- **Buffer** shows pending updates, and **Tx** shows updates sent. Both connections show **stopped** before you start the middleware.
 
-## Development and diagnostics
+## Choose variables to export
 
-Build and run the regression suite on Windows x64 with the .NET 8 SDK or later (the bundled MATRIC assembly requires x64):
+![Variable configuration showing an available-variable search and a selected export](docs/screenshots/variable-selection.png)
 
-```powershell
-dotnet build DCSMatricIntegrator.sln -c Release
-dotnet test DCSMatricIntegrator.sln -c Release
-```
+In **Configure export variables**, use the **Aircraft name** dropdown to choose the module, then select a **Category** or leave **-- ALL --** selected. Search either list, and use **X** to clear a search. Searching changes the visible list and keeps your selections intact.
 
-The main window shows DCS-BIOS stream health, MATRIC API availability, and the detected aircraft.
-MATRIC availability is checked with `GETCONNECTEDCLIENTS` once every **10 seconds**, with a **5-second reply deadline** after each request.
-An empty client list still confirms that the integration API is responding. UDP sends alone do not establish availability or acknowledge that variables were applied.
-After MATRIC becomes available, the middleware resends cached values in batches of at most 100 variables.
-A fallback refresh once per minute recovers from brief server restarts between probes. Normal updates contain only changed values; no empty updates are sent.
+Use click, Ctrl+Click, or Shift+Click to select variables:
 
-Use **Help → Open logs folder** for configuration warnings and connection errors.
-Logs are stored in `%LOCALAPPDATA%\DCS-BIOS-MATRIC\logs`, with a 5 MiB file limit and at most 14 files.
-Individual packets and variable updates are not logged at the default level.
+| Button | Action |
+| --- | --- |
+| `>` | Add selected available variables |
+| `>>` | Add all currently shown available variables |
+| `<` | Remove selected exported variables |
+| `<<` | Clear the entire selection for this module |
 
-Variable filters and the update-frequency slider apply immediately while running. Network settings require stopping and starting the middleware.
-For an aircraft with no saved variable selection, all its variables are forwarded. An explicit empty selection exports none, except separately selected common/metadata variables.
-Searches operate on the complete lists, and adding or removing filtered entries preserves hidden selections. Cancel discards edits.
+**Save** keeps your selections and applies them to a running connection. **Cancel** discards your edits. Choose only the variables your deck needs to keep the workload down while flying.
 
-The tests exercise synthetic DCS-BIOS streams, real loopback UDP MATRIC messages, reconnects, timeouts, partial startup failures, repeated start/stop, and the WinForms configuration dialogs.
-Validate a release against a live DCS/MATRIC session before distributing it.
+A module with no saved selection exports all its variables. To export none for a module, clear its selection with `<<` and click **Save**. Separately selected common or metadata variables may still be exported. The reminder at the bottom of the window explains this distinction.
+
+## Share selections and find help
+
+Use **File > Export variables list** to save selections to a file. Use **File > Import variables list** to add selections supplied with a deck or shared by another user. Imports add to your existing selections.
+
+If a configuration warning or connection error appears, choose **Help > Open logs folder** and open the newest log to see the affected file or control. If DCS-BIOS is waiting for a stream, check that DCS and DCS-BIOS are running. If MATRIC is not responding, check that MATRIC Server is running and third-party integration is enabled.
+
+The **Help** menu also contains **Manual**, **Project web**, and **Latest release**.
 
 ## Acknowledgements
 
